@@ -11,9 +11,8 @@ export default async function handler(req, res) {
 
     if (mode === "subscribe" && token === VERIFY_TOKEN) {
       return res.status(200).send(challenge);
-    } else {
-      return res.status(403).send("Verification failed");
     }
+    return res.status(403).send("Verification failed");
   }
 
   // Handle Messages (POST)
@@ -27,33 +26,40 @@ export default async function handler(req, res) {
         if (event.message && event.message.text) {
           const userMessage = event.message.text.toLowerCase();
 
-          // --- Custom Rule: "Who made you?" ---
-          if (
-            userMessage.includes("who made you") ||
-            userMessage.includes("who make you") ||
-            userMessage.includes("who created you") ||
-            userMessage.includes("sino gumawa sayo") ||
-            userMessage.includes("sino gumawa sa'yo") ||
-            userMessage.includes("gumawa sayo")
-          ) {
-            const fixedReply = "I was made by a Grade 12 TVL-ICT student named Klein Dindin 😄.";
+          // --- FIXED FEATURE 1: "Who made you?" answers ---
+          const creatorQuestions = [
+            "who made you",
+            "who make you",
+            "who created you",
+            "sino gumawa sayo",
+            "sino gumawa sa'yo",
+            "gumawa sayo",
+            "gumawa sa'yo"
+          ];
 
-            await fetch(
-              `https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`,
-              {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  recipient: { id: event.sender.id },
-                  message: { text: fixedReply },
-                }),
-              }
+          if (creatorQuestions.some(q => userMessage.includes(q))) {
+            await sendReply(event.sender.id,
+              "I was made by a Grade 12 TVL-ICT student named **Klein Dindin** 😄."
             );
-
-            return res.status(200).send("EVENT_RECEIVED");
+            continue;
           }
 
-          // --- OpenAI Response ---
+          // --- FIXED FEATURE 2: Magic word search ---
+          // Pattern: "<anything> pictures" or "<anything> pics"
+          const searchMatch = userMessage.match(/(.+?)\s+(pictures|pics|images)/);
+
+          if (searchMatch) {
+            const query = encodeURIComponent(searchMatch[1]);
+            const safeSearchUrl =
+              `https://www.google.com/search?q=${query}&tbm=isch&safe=active`;
+
+            await sendReply(event.sender.id,
+              `Here you go! 😊\nSafe image results for **${searchMatch[1]}**:\n${safeSearchUrl}`
+            );
+            continue;
+          }
+
+          // --- DEFAULT: Send to OpenAI (clean, friendly) ---
           const aiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
             method: "POST",
             headers: {
@@ -65,8 +71,7 @@ export default async function handler(req, res) {
               messages: [
                 {
                   role: "system",
-                  content:
-                    "You are a friendly chatbot. Always respond SHORT, CLEAN, and EASY to read. Use emojis when helpful. Be positive, safe, respectful, and avoid harmful content. Do not send long paragraphs."
+                  content: "You are KleinBot — friendly, short, safe, helpful, with light emojis. Keep responses clean and compliant with Meta rules."
                 },
                 { role: "user", content: userMessage }
               ]
@@ -74,20 +79,9 @@ export default async function handler(req, res) {
           });
 
           const aiData = await aiResponse.json();
-          const reply = aiData?.choices?.[0]?.message?.content || "Oops, something went wrong 😅";
+          const reply = aiData?.choices?.[0]?.message?.content || "Oops! Something went wrong 😅";
 
-          // --- Send AI reply to Messenger ---
-          await fetch(
-            `https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`,
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                recipient: { id: event.sender.id },
-                message: { text: reply },
-              }),
-            }
-          );
+          await sendReply(event.sender.id, reply);
         }
       }
 
@@ -98,4 +92,19 @@ export default async function handler(req, res) {
   }
 
   return res.status(405).send("Method Not Allowed");
-            }
+
+  // --- Helper Function ---
+  async function sendReply(senderId, message) {
+    await fetch(
+      `https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          recipient: { id: senderId },
+          message: { text: message },
+        }),
+      }
+    );
+  }
+}
