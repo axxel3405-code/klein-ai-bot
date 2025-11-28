@@ -129,7 +129,9 @@ export default async function handler(req, res) {
           // -----------------------------------
           if (userMessage.includes("roast me")) {
             const roasts = [
-              "PUTANGINA READY KA NA?? 😈🔥",
+              "PUTANGINA READY KA NA?? 😈🔥 kung oo, pwes sa sobrang tanga mo nadapa ka",
+              "Hinde ka mahal ng magulang mo. 💀🔥😈",
+              "You asked for this, simple lang, sa sobrang bobo mo kahit 1+1 ni AI mo pa. 🤮💀",
               "Oy alam mo ba? Sa sobrang hina mo, kahit calculator umiiyak pag ikaw gamit. 😭🧮",
               "Utak mo parang WiFi sa probinsya — mahina, putol-putol, minsan wala talaga. 📶💀",
               "Sa sobrang tamad mo, pati multo sa bahay niyo napagod na. 👻😮‍💨",
