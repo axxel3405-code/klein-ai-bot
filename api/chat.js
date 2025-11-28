@@ -1,20 +1,29 @@
 import fetch from "node-fetch";
 
 export default async function handler(req, res) {
-  const VERIFY_TOKEN = "misaiverify123"; // choose anything
+  const VERIFY_TOKEN = "misaiverify123";
   const PAGE_TOKEN = process.env.PAGE_TOKEN;
   const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
-  // FB verification
+  // --- FB Webhook Verification ---
   if (req.method === "GET") {
-    if (req.query["hub.verify_token"] === VERIFY_TOKEN) {
-      return res.send(req.query["hub.challenge"]);
+    const mode = req.query["hub.mode"];
+    const token = req.query["hub.verify_token"];
+    const challenge = req.query["hub.challenge"];
+
+    if (mode && token) {
+      if (mode === "subscribe" && token === VERIFY_TOKEN) {
+        console.log("WEBHOOK VERIFIED");
+        return res.status(200).send(challenge);
+      } else {
+        return res.sendStatus(403);
+      }
     }
-    return res.send("Verification failed");
   }
 
-  // Receiving messages
+  // --- Handle Messages ---
   const data = req.body;
+
   if (data.object === "page") {
     data.entry.forEach(async (entry) => {
       const event = entry.messaging[0];
@@ -40,8 +49,7 @@ export default async function handler(req, res) {
           }
         ).then((r) => r.json());
 
-        const reply =
-          aiResponse.choices?.[0]?.message?.content || "Error answering.";
+        const reply = aiResponse?.choices?.[0]?.message?.content || "Error answering.";
 
         // Send reply to Messenger
         await fetch(
