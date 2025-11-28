@@ -34,7 +34,8 @@ export default async function handler(req, res) {
 
         if (event.message && event.message.text) {
           const userId = event.sender.id;
-          const userMessage = event.message.text.toLowerCase();
+          const userMessageRaw = event.message.text;
+          const userMessage = userMessageRaw.toLowerCase();
 
           // --------------------------------------
           // MEMORY INITIALIZATION
@@ -53,12 +54,45 @@ export default async function handler(req, res) {
           }
 
           // Save new user message
-          userMemory[userId].user.push(userMessage);
+          userMemory[userId].user.push(userMessageRaw);
           if (userMemory[userId].user.length > MAX_MEMORY) {
             userMemory[userId].user.shift();
           }
 
           userMemory[userId].lastActive = Date.now();
+
+          // -----------------------------------
+          // VOICE MESSAGE TRIGGER
+          // -----------------------------------
+          const voiceTriggers = ["ai say", "ai  say", "a.i say", "ai sey", "aisay"];
+
+          const triggerFound = voiceTriggers.some(t =>
+            userMessage.startsWith(t)
+          );
+
+          if (triggerFound) {
+            // Extract text after "AI say"
+            const spokenText = userMessageRaw
+              .replace(/ai say/i, "")
+              .trim();
+
+            if (!spokenText) {
+              const reply = "What do you want me to say in voice? 😄🎤";
+              await sendMessage(userId, reply, PAGE_ACCESS_TOKEN);
+              saveBotMemory(userId, reply);
+              continue;
+            }
+
+            // Generate audio from OpenAI
+            const audioBuffer = await generateVoice(spokenText, OPENAI_API_KEY);
+
+            // Upload + send audio as voice message
+            await sendAudio(userId, audioBuffer, PAGE_ACCESS_TOKEN);
+
+            const reply = `🎤 Here's how "${spokenText}" sounds!`;
+            saveBotMemory(userId, reply);
+            continue;
+          }
 
           // -----------------------------------
           // 1. WHO MADE YOU FEATURE
@@ -70,7 +104,6 @@ export default async function handler(req, res) {
 
           if (creatorQuestions.some(q => userMessage.includes(q))) {
             const reply = "I was proudly made by a Grade 12 TVL-ICT student named **Klein Dindin** 🤖🔥";
-
             await sendMessage(userId, reply, PAGE_ACCESS_TOKEN);
             saveBotMemory(userId, reply);
             continue;
@@ -140,7 +173,7 @@ ${memoryContext}
 
 Use this memory naturally when replying.`
                 },
-                { role: "user", content: userMessage }
+                { role: "user", content: userMessageRaw }
               ]
             }),
           });
@@ -191,7 +224,46 @@ function buildMemoryContext(memoryObj) {
 }
 
 // --------------------------------------------------
-// SEND MESSAGE TO FACEBOOK
+// GENERATE VOICE FROM OPENAI
+// --------------------------------------------------
+async function generateVoice(text, OPENAI_API_KEY) {
+  const response = await fetch("https://api.openai.com/v1/audio/speech", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${OPENAI_API_KEY}`
+    },
+    body: JSON.stringify({
+      model: "gpt-4o-mini-tts",
+      input: text,
+      voice: "alloy" 
+    })
+  });
+
+  const arrayBuf = await response.arrayBuffer();
+  return Buffer.from(arrayBuf);
+}
+
+// --------------------------------------------------
+// SEND AUDIO TO MESSENGER
+// --------------------------------------------------
+async function sendAudio(recipientId, audioBuffer, PAGE_ACCESS_TOKEN) {
+  const formData = new FormData();
+  formData.append("recipient", JSON.stringify({ id: recipientId }));
+  formData.append("message", JSON.stringify({ attachment: { type: "audio", payload: {} } }));
+  formData.append("filedata", new Blob([audioBuffer]), "voice.mp3");
+
+  await fetch(
+    `https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`,
+    {
+      method: "POST",
+      body: formData
+    }
+  );
+}
+
+// --------------------------------------------------
+// SEND NORMAL TEXT MESSAGE
 // --------------------------------------------------
 async function sendMessage(id, text, PAGE_ACCESS_TOKEN) {
   await fetch(
@@ -201,8 +273,8 @@ async function sendMessage(id, text, PAGE_ACCESS_TOKEN) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         recipient: { id },
-        message: { text },
-      }),
+        message: { text }
+      })
     }
   );
-        }
+}
