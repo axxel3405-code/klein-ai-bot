@@ -1,119 +1,11 @@
-// /api/app.js
 export default async function handler(req, res) {
   const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
   const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
   const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
-  // Simple in-memory session store (short-term memory).
-  // Note: serverless instances may be recycled, so this is short-term only.
-  const sessionStore = global.__KLEINBOT_SESSIONS ||= {};
-
-  // Helpers
-  function now() {
-    return Date.now();
-  }
-
-  function cleanupSessions() {
-    const TTL = 1000 * 60 * 30; // 30 minutes
-    for (const id of Object.keys(sessionStore)) {
-      if (now() - sessionStore[id].lastActive > TTL) {
-        delete sessionStore[id];
-      }
-    }
-  }
-
-  function ensureSession(id) {
-    cleanupSessions();
-    if (!sessionStore[id]) {
-      sessionStore[id] = { messages: [], lastActive: now(), palambingUntil: 0 };
-    }
-    sessionStore[id].lastActive = now();
-    return sessionStore[id];
-  }
-
-  async function sendReply(senderId, message) {
-    try {
-      await fetch(
-        `https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            recipient: { id: senderId },
-            message: { text: message },
-          }),
-        }
-      );
-    } catch (err) {
-      console.error("sendReply error:", err?.message || err);
-    }
-  }
-
-  // Forbidden words (basic)
-  const forbiddenWords = [
-    "porn", "sex", "nude", "hentai", "xxx", "nsfw", "adult", "69",
-    "pussy", "cock", "blowjob", "anal"
-  ];
-  function hasForbidden(text) {
-    return forbiddenWords.some(w => text.toLowerCase().includes(w));
-  }
-
-  // Creator triggers (all variants)
-  const creatorTriggers = [
-    "who made you",
-    "who make you",
-    "who created you",
-    "sino gumawa sayo",
-    "sino gumawa sa'yo",
-    "gumawa sayo",
-    "gumawa sa'yo"
-  ];
-
-  // Palambing / comfort triggers (Tagalog + English)
-  const palambingTriggers = [
-    "palambing", "palambingin", "comfort me", "comfort", "sad ako",
-    "i'm sad", "can you comfort", "need lambing", "need comfort",
-    "pwede palambing", "lamigin", "lambing", "sad ako naman"
-  ];
-
-  // Picture triggers (words that indicate user wants images)
-  const pictureTriggers = ["picture", "pictures", "pic", "pics", "image", "images", "wallpaper", "wallpapers"];
-
-  // Build Google image search link (safe)
-  function googleImageLink(query) {
-    const encoded = encodeURIComponent(query);
-    return `https://www.google.com/search?q=${encoded}&tbm=isch&safe=active`;
-  }
-
-  // Build OpenAI messages from session memory
-  function buildMessagesForOpenAI(session, isPalambingActive) {
-    // Base system prompt (default)
-    const baseSystem = `You are KleinBot: helpful, short, and friendly. Keep replies short (1-3 sentences), positive, and safe for Meta. Use emojis lightly.`;
-
-    // Palambing system prompt (used when user asks for affection/comfort)
-    const palambingSystem = `You are KleinBot in a sweet & gentle "palambing" mode (soft, warm, caring). Respond with comforting, kind, and gentle language. Keep it short, sincere, and safe. Use gentle emojis like 🤍✨🤗. Avoid flirtatious or sexual content.`;
-
-    // Humor instruction blended in (60% sweet / 40% playful)
-    const humorAddOn = `Tone: 60% sweet, 40% playful — a little teasing when appropriate but respectful. Keep messages short.`;
-
-    const messages = [
-      {
-        role: "system",
-        content: isPalambingActive ? `${baseSystem}\n${palambingSystem}\n${humorAddOn}` : `${baseSystem}\n${humorAddOn}`
-      }
-    ];
-
-    // Append recent conversation from session (max last 8 entries)
-    const max = 8;
-    const recent = session.messages.slice(-max);
-    for (const m of recent) {
-      messages.push({ role: m.role, content: m.content });
-    }
-
-    return messages;
-  }
-
-  // Webhook verification (GET)
+  // ------------------------------
+  //  WEBHOOK VERIFICATION (GET)
+  // ------------------------------
   if (req.method === "GET") {
     const mode = req.query["hub.mode"];
     const token = req.query["hub.verify_token"];
@@ -121,127 +13,157 @@ export default async function handler(req, res) {
 
     if (mode === "subscribe" && token === VERIFY_TOKEN) {
       return res.status(200).send(challenge);
+    } else {
+      return res.status(403).send("Verification failed");
     }
-    return res.status(403).send("Verification failed");
   }
 
-  // Handle messages (POST)
+  // ------------------------------
+  //  MESSAGE HANDLER (POST)
+  // ------------------------------
   if (req.method === "POST") {
     const body = req.body;
 
     if (body.object === "page") {
       for (const entry of body.entry) {
-        const event = entry.messaging?.[0];
-        if (!event) continue;
-
-        const senderId = event.sender?.id;
-        if (!senderId) continue;
+        const event = entry.messaging[0];
 
         if (event.message && event.message.text) {
-          const rawText = String(event.message.text).trim();
-          const text = rawText.toLowerCase();
+          const userMessage = event.message.text.toLowerCase();
 
-          // Setup session
-          const session = ensureSession(senderId);
+          // -----------------------------------
+          // 1. SPECIAL FEATURE: WHO MADE YOU?
+          // -----------------------------------
+          const creatorQuestions = [
+            "who made you",
+            "who make you",
+            "who created you",
+            "sino gumawa sayo",
+            "sino gumawa sa'yo",
+            "sino gumawa sayo?",
+            "gumawa sayo",
+            "gumawa sa'yo"
+          ];
 
-          // 1) Creator triggers (preset, skip OpenAI)
-          if (creatorTriggers.some(t => text.includes(t))) {
-            await sendReply(senderId, "I was made by a Grade 12 TVL-ICT student named Klein Dindin 😄.");
-            // Save assistant reply to memory
-            session.messages.push({ role: "user", content: rawText });
-            session.messages.push({ role: "assistant", content: "I was made by a Grade 12 TVL-ICT student named Klein Dindin 😄." });
+          if (creatorQuestions.some(q => userMessage.includes(q))) {
+            await sendMessage(event.sender.id,
+              "I was proudly made by a Grade 12 TVL-ICT student named **Klein Dindin** 🤖🔥",
+              PAGE_ACCESS_TOKEN
+            );
             continue;
           }
 
-          // 2) Magic image search (pattern and triggers)
-          // Match patterns like "anime pictures", "cute cat images please", "sunset wallpaper"
-          const pictureRegex = /(.+?)\s+(pictures|picture|pics|pic|images|image|wallpaper|wallpapers)(\s*please)?$/i;
-          const picMatch = rawText.match(pictureRegex);
-          if (picMatch) {
-            const topic = picMatch[1].trim();
-            if (hasForbidden(topic)) {
-              await sendReply(senderId, "Sorry 😅 I can't search for that. Try something safer!");
-              // log to session
-              session.messages.push({ role: "user", content: rawText });
-              session.messages.push({ role: "assistant", content: "Sorry 😅 I can't search for that. Try something safer!" });
-              continue;
-            }
-            const link = googleImageLink(topic);
-            const reply = `Here you go! 🔍😊\nSafe image results for "${topic}":\n👉 ${link}`;
-            await sendReply(senderId, reply);
-            // save
-            session.messages.push({ role: "user", content: rawText });
-            session.messages.push({ role: "assistant", content: reply });
+          // -----------------------------------
+          // 2. GOOGLE SEARCH FEATURE
+          // Trigger example: "anime pictures"
+          // -----------------------------------
+          if (userMessage.includes("pictures") || userMessage.includes("image")) {
+            const query = encodeURIComponent(userMessage);
+            const link = `https://www.google.com/search?q=${query}&tbm=isch`;
+
+            await sendMessage(
+              event.sender.id,
+              `Here you go! 🔍✨\nI found something for you:\n${link}`,
+              PAGE_ACCESS_TOKEN
+            );
             continue;
           }
 
-          // 3) Palambing detection: if user asked for affection / comfort, set palambing mode
-          const askedForPalambing = palambingTriggers.some(p => text.includes(p));
-          if (askedForPalambing) {
-            // set palambing mode active for next few minutes (so bot can continue gentle for a short time)
-            session.palambingUntil = now() + 1000 * 60 * 5; // 5 minutes of palambing mode
-            // For immediate reply we'll call OpenAI with palambing mode on
-          }
+          // -----------------------------------
+          // 3. DEVIL ROAST MODE (LEVEL 999)
+          // Trigger: "roast me"
+          // -----------------------------------
+          if (userMessage.includes("roast me")) {
+            const roasts = [
 
-          // 4) If the message contains an obvious forbidden term, refuse
-          if (hasForbidden(text)) {
-            const refuse = "Sorry 😅 I can't help with that. Please ask for something else!";
-            await sendReply(senderId, refuse);
-            session.messages.push({ role: "user", content: rawText });
-            session.messages.push({ role: "assistant", content: refuse });
+              "PUTANGINA READY KA NA?? 😈🔥",
+              "Oy alam mo ba? Sa sobrang hina mo, kahit calculator umiiyak pag ikaw gamit. 😭🧮",
+              "Yung utak mo parang WiFi sa probinsya — mahina, putol-putol, minsan wala talaga. 📶💀",
+              "Sa sobrang tamad mo, pati multo sa bahay niyo napagod na sa'yo. 👻😮‍💨",
+              "Ni nanay at tatay mo hirap ka i-defend sa barangay. 🤣🔥",
+              "Ikaw lang kilala kong tao na kahit hindi gumagalaw, nakakapagod panoorin. 😭💀",
+              "May potential ka… potential maging warning sign sa iba. ⚠️😈",
+              "Mas mabilis pa yung kapalaran mong lumayo kaysa WiFi mong kumonek. 📶💔",
+              "Nagre-request ka ng roast? Anak, roasted ka na sa buhay pa lang. 🔥💀",
+              "Kung katangahan currency, bilyonaryo ka na. 💸🧠",
+              "Ikaw yung tipong pag nag-isip, napapagod buong paligid. 😮‍💨😔",
+              "Sa sobrang useless mo, even recycle bin nireject ka. 🗑️🚫",
+              "Mas reliable pa horoscope kesa sa decision-making mo. 🔮🤡",
+              "Kung may award sa pagiging lost, ikaw yung host ng event. 🧭💀",
+              "Naghahanap ka ng pagmamahal? Try mo muna hanapin yung common sense mo. 🧐😂",
+              "Sa sobrang awkward mo, pati silence uncomfortable. 😭😬",
+              "Ikaw yung reminder kung bakit kailangan ng manual ang toothbrush. 🪥💀",
+              "Ang presence mo parang ad sa YouTube — nakakainis at walang relevance. 📺😈",
+              "Pag sumagot ka parang maintenance: kailangan ng patience. 🛠️😮‍💨",
+              "Ikaw lang kilala kong tao na pag naglakad nagiging bad day ng iba. 🚶‍♂️🔥",
+              "Kung utak electric fan, sayo number 0 lang gumagana. 🧠🌀",
+              "Kahit ghosting, di mo alam — ikaw kasi laging ini-ignore. 👻💔",
+              "Mas matalino pa loading screen kesa sayo. ⏳💀",
+              "Yung boses mo parang 144p audio — low quality at nakakastress. 🎧😭",
+              "Ikaw yung sample answer kung bakit may 'Do not attempt' sa instructions. 📘😈",
+              "Sa sobrang hina mo, pati lapis napuputol pag hawak mo. ✏️😮‍💨",
+              "Kung energy level mo battery, 1% pero naka-power save pa. 🔋💀",
+              "Yung aura mo parang traffic — walang direction at nakakapagod. 🚦😮‍💨",
+              "Sa sobrang lost mo, dapat may GPS ka built-in. 🗺️😂",
+              "Ikaw yung tipo ng tao na kahit may plan, magiging disaster pa rin. 📅💥",
+              "Kung buhay mo weather report, lagi 'cloudy with zero chance of success'. ☁️💀",
+              "Kahit algorithm nalilito sayo. 🤖❓",
+              "Kahit AI nagba-buffer bago ka kausapin. ⏳😈",
+              "Kung buhay mo movie, tragedy-comedy talaga. 🎬😭",
+              "Talent mo? Manggulat ng disappointment. 🏆💔",
+              "Yung vibe mo parang printer — laging may issue kahit idle. 🖨️😮‍💨",
+              "Pag sinabi mong 'I got this', lahat nagdadasal. 🙏💀",
+              "Ikaw yung tipo na pag na-late, wala namang naghanap. 🚶‍♂️💭",
+              "Kahit salamin ayaw na mag-reflect sayo — pagod na. 🪞😩",
+              "Kung braincells mo empleyado, naka day-off lahat. 🧠🏖️",
+              "Sa sobrang slow mo, loading bar mismo nagsasabi 'ikaw na maghintay'. ⏳💀",
+              "Mas sharp pa plastic spoon kesa reasoning mo. 🥄😭",
+              "Ikaw yung reason bakit may word na 'unfortunately'. 😔📚",
+              "Pag nag-advice ka, guaranteed wrong turn. 🛣️❌",
+              "Future mo unbothered — di ka niya ina-update. 🔮😬",
+              "Kung may IQ sale, lugi ka pa rin. 🧠💸",
+              "Rich in spirit ka… kasi wala ka nang ibang meron. 😭🔥",
+              "Pwede ka mag-host ng self-sabotage tutorials. 📘💀",
+              "Yung decisions mo parang signal sa tuktok — useless. 📶🤣",
+              "Mas smooth pa Premiere kagabi kesa personality mo. 💻😈",
+              "Motivational quotes napapagod sayo. 📜😮‍💨",
+              "Ikaw ang tunay na meaning ng 'sana nag-isip muna'. 🤦‍♂️🔥",
+              "Confidence mo parang WiFi — no connection. 📶💔",
+              "Sa sobrang chaotic mo, pati demonyo nag-pray-over. 😈🙏",
+              "Pag sinabing 'be yourself', dapat may disclaimer. ⚠️😂🔥"
+            ];
+
+            const randomRoast = roasts[Math.floor(Math.random() * roasts.length)];
+
+            await sendMessage(event.sender.id, randomRoast, PAGE_ACCESS_TOKEN);
             continue;
           }
 
-          // 5) Prepare messages for OpenAI using session memory
-          // push current user message into session memory first
-          session.messages.push({ role: "user", content: rawText });
+          // -----------------------------------------
+          // 4. NORMAL AI RESPONSE (FRIENDLY, SHORT)
+          // -----------------------------------------
+          const aiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${OPENAI_API_KEY}`,
+            },
+            body: JSON.stringify({
+              model: "gpt-4o-mini",
+              messages: [
+                {
+                  role: "system",
+                  content: "You are KleinBot, a friendly Filipino chatbot. Keep responses short, warm, affectionate, funny, with emojis. Avoid sexual or harmful content."
+                },
+                { role: "user", content: userMessage }
+              ]
+            }),
+          });
 
-          // Trim session messages to reasonable size (avoid big payloads)
-          const MAX_SESSION = 20;
-          if (session.messages.length > MAX_SESSION) {
-            session.messages = session.messages.slice(-MAX_SESSION);
-          }
+          const aiData = await aiResponse.json();
+          const reply = aiData?.choices?.[0]?.message?.content || "Sorry, nagka-error ako 😭";
 
-          const isPalambingActive = now() < (session.palambingUntil || 0);
-
-          const messagesForOpenAI = buildMessagesForOpenAI(session, isPalambingActive);
-
-          // 6) Call OpenAI
-          let aiReply = "Oops! Something went wrong 😅";
-          try {
-            const aiResp = await fetch("https://api.openai.com/v1/chat/completions", {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                Authorization: `Bearer ${OPENAI_API_KEY}`,
-              },
-              body: JSON.stringify({
-                model: "gpt-4o-mini",
-                messages: messagesForOpenAI,
-                max_tokens: 200,
-                temperature: 0.7
-              }),
-            });
-            const aiData = await aiResp.json();
-            aiReply = aiData?.choices?.[0]?.message?.content?.trim() || aiReply;
-
-            // Post-process: shorten if too long, ensure short & clean
-            if (aiReply.length > 800) {
-              aiReply = aiReply.split("\n").slice(0, 5).join("\n").slice(0, 700) + "…";
-            }
-          } catch (err) {
-            console.error("OpenAI error:", err?.message || err);
-            aiReply = "Sorry 😅 I couldn't think of a good answer right now.";
-          }
-
-          // 7) Save assistant reply to memory & send
-          session.messages.push({ role: "assistant", content: aiReply });
-          // keep memory bounded
-          if (session.messages.length > MAX_SESSION) {
-            session.messages = session.messages.slice(-MAX_SESSION);
-          }
-
-          await sendReply(senderId, aiReply);
+          await sendMessage(event.sender.id, reply, PAGE_ACCESS_TOKEN);
         }
       }
 
@@ -252,4 +174,21 @@ export default async function handler(req, res) {
   }
 
   return res.status(405).send("Method Not Allowed");
-              }
+}
+
+// ----------------------------------------------
+// SEND MESSAGE FUNCTION
+// ----------------------------------------------
+async function sendMessage(id, text, PAGE_ACCESS_TOKEN) {
+  await fetch(
+    `https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        recipient: { id },
+        message: { text },
+      }),
+    }
+  );
+}
