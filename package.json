@@ -1,0 +1,10 @@
+{
+  "name": "klein-ai-bot",
+  "version": "1.0.0",
+  "description": "Messenger AI bot",
+  "main": "index.js",
+  "scripts": {
+    "start": "node api/chat.js"
+  },
+  "type": "module"
+}
