@@ -1,9 +1,9 @@
 export default async function handler(req, res) {
-  const VERIFY_TOKEN = "misaiverify123"; 
-  const PAGE_TOKEN = process.env.PAGE_TOKEN;
+  const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
+  const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
   const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
-  // Webhook Verification
+  // Webhook Verification (GET)
   if (req.method === "GET") {
     const mode = req.query["hub.mode"];
     const token = req.query["hub.verify_token"];
@@ -16,7 +16,7 @@ export default async function handler(req, res) {
     }
   }
 
-  // Handle Messages
+  // Handle Messages (POST)
   if (req.method === "POST") {
     const body = req.body;
 
@@ -28,7 +28,7 @@ export default async function handler(req, res) {
           const userMessage = event.message.text;
 
           // Call OpenAI
-          const aiRes = await fetch("https://api.openai.com/v1/chat/completions", {
+          const aiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -37,17 +37,18 @@ export default async function handler(req, res) {
             body: JSON.stringify({
               model: "gpt-4o-mini",
               messages: [
-                { role: "system", content: "You are a friendly AI chatbot." },
+                { role: "system", content: "You are a friendly chatbot." },
                 { role: "user", content: userMessage }
               ]
             }),
-          }).then((r) => r.json());
+          });
 
-          const reply = aiRes.choices?.[0]?.message?.content || "Error receiving response.";
+          const aiData = await aiResponse.json();
+          const reply = aiData?.choices?.[0]?.message?.content || "Error.";
 
-          // Send reply to Messenger
+          // Send reply
           await fetch(
-            `https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_TOKEN}`,
+            `https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`,
             {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -61,9 +62,9 @@ export default async function handler(req, res) {
       }
 
       return res.status(200).send("EVENT_RECEIVED");
-    } else {
-      return res.status(404).send("Not Found");
     }
+
+    return res.status(404).send("Not Found");
   }
 
   return res.status(405).send("Method Not Allowed");
