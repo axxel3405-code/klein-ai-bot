@@ -25,9 +25,35 @@ export default async function handler(req, res) {
         const event = entry.messaging[0];
 
         if (event.message && event.message.text) {
-          const userMessage = event.message.text;
+          const userMessage = event.message.text.toLowerCase();
 
-          // Call OpenAI
+          // --- Custom Rule: "Who made you?" ---
+          if (
+            userMessage.includes("who made you") ||
+            userMessage.includes("who make you") ||
+            userMessage.includes("who created you") ||
+            userMessage.includes("sino gumawa sayo") ||
+            userMessage.includes("sino gumawa sa'yo") ||
+            userMessage.includes("gumawa sayo")
+          ) {
+            const fixedReply = "I was made by a Grade 12 TVL-ICT student named Klein Dindin 😄.";
+
+            await fetch(
+              `https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`,
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  recipient: { id: event.sender.id },
+                  message: { text: fixedReply },
+                }),
+              }
+            );
+
+            return res.status(200).send("EVENT_RECEIVED");
+          }
+
+          // --- OpenAI Response ---
           const aiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
             method: "POST",
             headers: {
@@ -37,16 +63,20 @@ export default async function handler(req, res) {
             body: JSON.stringify({
               model: "gpt-4o-mini",
               messages: [
-                { role: "system", content: "You are a friendly chatbot." },
+                {
+                  role: "system",
+                  content:
+                    "You are a friendly chatbot. Always respond SHORT, CLEAN, and EASY to read. Use emojis when helpful. Be positive, safe, respectful, and avoid harmful content. Do not send long paragraphs."
+                },
                 { role: "user", content: userMessage }
               ]
             }),
           });
 
           const aiData = await aiResponse.json();
-          const reply = aiData?.choices?.[0]?.message?.content || "Error.";
+          const reply = aiData?.choices?.[0]?.message?.content || "Oops, something went wrong 😅";
 
-          // Send reply
+          // --- Send AI reply to Messenger ---
           await fetch(
             `https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`,
             {
@@ -68,4 +98,4 @@ export default async function handler(req, res) {
   }
 
   return res.status(405).send("Method Not Allowed");
-}
+            }
