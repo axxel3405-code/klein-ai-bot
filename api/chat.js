@@ -1,5 +1,5 @@
 // TEMPORARY MEMORY STORAGE (per user)
-const userMemory = {};
+const userMemory = {}; 
 const MAX_MEMORY = 10;
 
 export default async function handler(req, res) {
@@ -48,12 +48,12 @@ export default async function handler(req, res) {
             };
           }
 
-          // RESET IF INACTIVE FOR 1 HOUR
+          // RESET MEMORY IF INACTIVE FOR 1 HOUR
           if (Date.now() - userMemory[userId].lastActive > 3600000) {
             userMemory[userId] = { user: [], bot: [], lastActive: Date.now() };
           }
 
-          // Save user message
+          // Save new user message
           userMemory[userId].user.push(userMessageRaw);
           if (userMemory[userId].user.length > MAX_MEMORY) {
             userMemory[userId].user.shift();
@@ -62,14 +62,23 @@ export default async function handler(req, res) {
           userMemory[userId].lastActive = Date.now();
 
           // -----------------------------------
-          // AI SAY → VOICE MESSAGE (FREE GOOGLE TTS)
+          // VOICE MESSAGE TRIGGER ("AI SAY")
           // -----------------------------------
-          const voiceTriggers = ["ai say", "ai sey", "aisay", "a.i say", "ai  say"];
+          const voiceTriggers = ["ai say", "ai  say", "a.i say", "ai sey", "aisay"];
 
-          const triggerFound = voiceTriggers.some(t => userMessage.startsWith(t));
+          const triggerFound = voiceTriggers.some(t =>
+            userMessage.startsWith(t)
+          );
 
           if (triggerFound) {
-            const spokenText = userMessageRaw.replace(/ai say/i, "").trim();
+            // Extract text after "AI say"
+            const spokenText = userMessageRaw
+              .replace(/ai say/i, "")
+              .replace(/ai  say/i, "")
+              .replace(/a.i say/i, "")
+              .replace(/ai sey/i, "")
+              .replace(/aisay/i, "")
+              .trim();
 
             if (!spokenText) {
               const reply = "What do you want me to say in voice? 😄🎤";
@@ -78,23 +87,24 @@ export default async function handler(req, res) {
               continue;
             }
 
+            // Generate FREE Google TTS
             try {
               const audioBuffer = await generateVoice(spokenText);
-
               await sendAudio(userId, audioBuffer, PAGE_ACCESS_TOKEN);
 
               const reply = `🎤 Here's how "${spokenText}" sounds!`;
               saveBotMemory(userId, reply);
-            } catch (e) {
-              const fallback = `Sori, hindi makagawa ng audio ngayon. Narito ang sinabi ko: "${spokenText}"`;
-              await sendMessage(userId, fallback, PAGE_ACCESS_TOKEN);
-              saveBotMemory(userId, fallback);
+            } catch (err) {
+              const reply = `Sori, hindi makagawa ng audio ngayon. Narito ang sinabi ko: "${spokenText}"`;
+              await sendMessage(userId, reply, PAGE_ACCESS_TOKEN);
+              saveBotMemory(userId, reply);
             }
+
             continue;
           }
 
           // -----------------------------------
-          // WHO MADE YOU FEATURE
+          // 1. WHO MADE YOU FEATURE
           // -----------------------------------
           const creatorQuestions = [
             "who made you", "who make you", "who created you",
@@ -102,38 +112,43 @@ export default async function handler(req, res) {
           ];
 
           if (creatorQuestions.some(q => userMessage.includes(q))) {
-            const reply = "I was proudly made by **Klein Dindin**, a Grade 12 TVL-ICT student. 🤖🔥";
+            const reply = "I was proudly made by a Grade 12 TVL-ICT student named **Klein Dindin** 🤖🔥";
             await sendMessage(userId, reply, PAGE_ACCESS_TOKEN);
             saveBotMemory(userId, reply);
             continue;
           }
 
           // -----------------------------------
-          // IMAGE SEARCH FEATURE
+          // 2. GOOGLE IMAGE SEARCH
           // -----------------------------------
-          if (userMessage.includes("picture") || userMessage.includes("image")) {
+          if (userMessage.includes("pictures") || userMessage.includes("image")) {
             const query = encodeURIComponent(userMessage);
             const link = `https://www.google.com/search?q=${query}&tbm=isch`;
 
-            const reply = `📸 Here you go!\n${link}`;
+            const reply = `Here you go! 🔍✨\nI found something for you:\n${link}`;
+
             await sendMessage(userId, reply, PAGE_ACCESS_TOKEN);
             saveBotMemory(userId, reply);
             continue;
           }
 
           // -----------------------------------
-          // DEVIL ROAST MODE
+          // 3. DEVIL ROAST MODE (REPEAT ALLOWED)
           // -----------------------------------
           if (userMessage.includes("roast me")) {
             const roasts = [
-              "Embes na pag-aralan mo ni AI mopa talaga. 🤮🤮",
-              "Sa sobrang hina mo, kahit calculator umiiyak pag ikaw gamit. 😭🧮",
+              "Embes na pag-aralan mo ni AI mopa talaga. 🤢🤮",
+              "Ikaw yung heavy AI dependent eh, ke't decision mo sa buhay ako pa nagpaplano. 😭🙏",
+              "Oy alam mo ba? Sa sobrang hina mo, kahit calculator umiiyak pag ikaw gamit. 😭🧮",
               "Utak mo parang WiFi sa probinsya — mahina, putol-putol, minsan wala talaga. 📶💀",
+              "Sa sobrang tamad mo, pati multo sa bahay niyo napagod na. 👻😮‍💨",
               "Ni nanay at tatay mo hirap ka i-defend sa barangay. 🤣🔥",
               "Ikaw lang tao na kahit hindi gumagalaw, nakakapagod panoorin. 😭💀",
+              "May potential ka… potential maging warning sign. ⚠️😈",
+              "Nagre-request ka ng roast? Anak, roasted ka na sa buhay pa lang. 🔥💀",
               "Kung katangahan currency, bilyonaryo ka na. 💸🧠",
               "Mas sharp pa plastic spoon kesa reasoning mo. 🥄😭",
-              "Nagre-request ka ng roast? Anak, roasted ka na sa buhay pa lang. 🔥💀",
+              "Kahit ghosting, di mo alam — kasi lahat sayo nag-iignore. 👻💔",
               "Kung braincells mo empleyado, naka day-off lahat. 🧠🏖️"
             ];
 
@@ -144,8 +159,24 @@ export default async function handler(req, res) {
             continue;
           }
 
+          // -----------------------------------
+          // 4. CREATOR NAME VARIANT DETECTOR
+          // -----------------------------------
+          const creatorVariants = [
+            "klein", "dindin", "kleindindin",
+            "rjklein", "rjdindin", "rj dindin",
+            "rj klein", "creator klein", "klein bot"
+          ];
+
+          if (creatorVariants.some(v => userMessage.includes(v))) {
+            const reply = "Oh! You're talking about my creator, well he's busy rn, nag lulu pasya 🙏 But I'm here you can talk to me. ❤️🤩";
+            await sendMessage(userId, reply, PAGE_ACCESS_TOKEN);
+            saveBotMemory(userId, reply);
+            continue;
+          }
+
           // -----------------------------------------
-          // NORMAL OPENAI AI RESPONSE WITH MEMORY
+          // 5. NORMAL AI RESPONSE (WITH MEMORY)
           // -----------------------------------------
           const memoryContext = buildMemoryContext(userMemory[userId]);
 
@@ -160,12 +191,12 @@ export default async function handler(req, res) {
               messages: [
                 {
                   role: "system",
-                  content: `You are KleinBot, a funny Filipino chatbot with short replies and emojis.
-
-Here is the user's memory:
+                  content: `You are KleinBot, a warm, funny Filipino chatbot with short replies and emojis.
+                  
+Here is the user memory (last 10 messages):
 ${memoryContext}
 
-Use the memory naturally.`
+Use this memory naturally when replying.`
                 },
                 { role: "user", content: userMessageRaw }
               ]
@@ -218,16 +249,16 @@ function buildMemoryContext(memoryObj) {
 }
 
 // --------------------------------------------------
-// FREE GOOGLE TTS (MP3 OUTPUT)
+// FREE GOOGLE TTS (NO PAYMENT NEEDED)
 // --------------------------------------------------
 async function generateVoice(text) {
   const url = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(
     text
-  )}&tl=tl&client=tw-ob`; // TL = Tagalog (auto works even with English)
+  )}&tl=en&client=tw-ob`;
 
   const resp = await fetch(url);
-  const array = await resp.arrayBuffer();
-  return Buffer.from(array);
+  const buffer = Buffer.from(await resp.arrayBuffer());
+  return buffer;
 }
 
 // --------------------------------------------------
@@ -249,7 +280,7 @@ async function sendAudio(recipientId, audioBuffer, PAGE_ACCESS_TOKEN) {
 }
 
 // --------------------------------------------------
-// SEND TEXT MESSAGE
+// SEND NORMAL TEXT MESSAGE
 // --------------------------------------------------
 async function sendMessage(id, text, PAGE_ACCESS_TOKEN) {
   await fetch(
@@ -263,4 +294,5 @@ async function sendMessage(id, text, PAGE_ACCESS_TOKEN) {
       })
     }
   );
-}
+        }
+                            
