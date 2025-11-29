@@ -1,5 +1,6 @@
-// KleinBot final webhook (FULL VERSION)
-// Includes: ElevenLabs (Adam, free tier), Footer logic, Roast, Memory, Image search, Ai say, etc.
+// KleinBot final webhook (FINAL) - Base: chat (3).js
+// Fixed ElevenLabs voice_id (Adam), free model (eleven_turbo_v2_5), no Google TTS.
+// Keep footer, memory, roast, image search, Ai say (simple), etc.
 
 const MAX_MEMORY = 10;
 const INACTIVITY_MS = 3600000;
@@ -48,6 +49,7 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const FOOTER = "\n\n\nUse <GptHelp> command to see all of the current commands.";
 function buildFooterText(text) {
+  if (!text) return FOOTER.trim();
   if (text.includes(FOOTER)) return text;
   return `${text}${FOOTER}`;
 }
@@ -73,7 +75,7 @@ async function sendTextReply(recipientId, text, PAGE_ACCESS_TOKEN, appendFooter 
   return final;
 }
 
-// SIMPLE AI-SAY
+// SIMPLE AI-SAY (limited variants as requested)
 const voiceRegex = /^(?:ai[\s.\-]*say|aisay|a\.i[\s.\-]*say|ai-say)\s+(.+)$/i;
 
 // HELP COMMAND
@@ -109,10 +111,9 @@ function pickRoast() {
 }
 
 //
-// 🚀 FINAL ELEVENLABS – ADAM VOICE – FREE MODEL
+// ELEVENLABS TTS (Adam voice - correct voice_id + free model)
 //
-const ELEVEN_VOICE_ID = "Adam";
-
+const ELEVEN_VOICE_ID = "pNInz6obpgDQGcFmaJgB"; // Adam (official voice_id)
 async function generateElevenLabsVoice(text) {
   try {
     const resp = await safeFetch(
@@ -131,12 +132,23 @@ async function generateElevenLabsVoice(text) {
       }
     );
 
-    if (!resp.ok) return null;
+    if (!resp.ok) {
+      // Log status & body for debugging
+      try {
+        const txt = await resp.text();
+        console.error("ElevenLabs TTS error:", resp.status, txt);
+      } catch (e) {
+        console.error("ElevenLabs TTS error status:", resp.status);
+      }
+      return null;
+    }
 
     const array = await resp.arrayBuffer();
-    return Buffer.from(array);
+    const buf = Buffer.from(array || []);
+    return buf.length > 0 ? buf : null;
 
   } catch (e) {
+    console.error("ElevenLabs exception:", e);
     return null;
   }
 }
@@ -155,8 +167,18 @@ async function uploadAttachment(audioBuffer, PAGE_ACCESS_TOKEN) {
 
   const resp = await safeFetch(
     `https://graph.facebook.com/v17.0/me/message_attachments?access_token=${PAGE_ACCESS_TOKEN}`,
-    { method: "POST", body: form, headers: form.getHeaders() }
+    { method: "POST", body: form, headers: form.getHeaders ? form.getHeaders() : {} }
   );
+
+  if (!resp.ok) {
+    try {
+      const txt = await resp.text();
+      console.error("Attachment upload failed:", resp.status, txt);
+    } catch (_) {
+      console.error("Attachment upload failed status:", resp.status);
+    }
+    return null;
+  }
 
   const json = await resp.json();
   return json?.attachment_id || null;
@@ -164,25 +186,40 @@ async function uploadAttachment(audioBuffer, PAGE_ACCESS_TOKEN) {
 
 // GPT REPLY
 async function getAIReply(openaiKey, userMessage, memory) {
-  const resp = await safeFetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${openaiKey}`
-    },
-    body: JSON.stringify({
-      model: "gpt-4o-mini",
-      messages: [
-        { role: "system", content: "You are KleinBot, a friendly American-Filipino chatbot with short replies and emojis." },
-        { role: "system", content: memory ? `Memory:\n${memory}` : "" },
-        { role: "user", content: userMessage }
-      ],
-      max_tokens: 200
-    })
-  });
+  try {
+    const resp = await safeFetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${openaiKey}`
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [
+          { role: "system", content: "You are KleinBot, a friendly American-Filipino chatbot with short replies and emojis." },
+          { role: "system", content: memory ? `Memory:\n${memory}` : "" },
+          { role: "user", content: userMessage }
+        ],
+        max_tokens: 200
+      })
+    });
 
-  const data = await resp.json();
-  return data?.choices?.[0]?.message?.content || "Sorry, nagka-error ako 😭";
+    if (!resp.ok) {
+      try {
+        const txt = await resp.text();
+        console.error("OpenAI API error:", resp.status, txt);
+      } catch (_) {
+        console.error("OpenAI API error status:", resp.status);
+      }
+      return "Sorry, nagka-error ako 😭";
+    }
+
+    const data = await resp.json();
+    return data?.choices?.[0]?.message?.content || "Sorry, nagka-error ako 😭";
+  } catch (e) {
+    console.error("OpenAI request exception:", e);
+    return "Sorry, nagka-error ako 😭";
+  }
 }
 
 export default async function handler(req, res) {
@@ -200,27 +237,30 @@ export default async function handler(req, res) {
 
   try {
     const body = req.body;
-    if (body.object !== "page") return res.send("Ignored");
+    if (!body || body.object !== "page") return res.send("Ignored");
 
-    for (const entry of body.entry) {
-      for (const event of entry.messaging) {
-        if (!event.message?.text) continue;
+    for (const entry of body.entry || []) {
+      for (const event of entry.messaging || []) {
+        try {
+          if (!event.message?.text) continue;
 
-        const userId = event.sender.id;
-        const text = event.message.text.trim();
-        const lower = text.toLowerCase();
+          const userId = event.sender?.id;
+          if (!userId) continue;
 
-        ensureUserMemory(userId);
-        saveUserMessage(userId, text);
+          const text = String(event.message.text).trim();
+          const lower = text.toLowerCase();
 
-        userMemory[userId].messageCount++;
-        const msgCount = userMemory[userId].messageCount;
-        const showFooter = msgCount === 1 || msgCount % 10 === 0;
+          ensureUserMemory(userId);
+          saveUserMessage(userId, text);
 
-        // HELP
-        const noSpace = lower.replace(/\s+/g, "");
-        if (helpVariants.some(v => noSpace.includes(v.replace(/\s+/g, "")))) {
-          const helpText = `✳️This are the current commands you can try: 
+          userMemory[userId].messageCount = (userMemory[userId].messageCount || 0) + 1;
+          const msgCount = userMemory[userId].messageCount;
+          const showFooter = msgCount === 1 || msgCount % 10 === 0;
+
+          // HELP
+          const noSpace = lower.replace(/\s+/g, "");
+          if (helpVariants.some(v => noSpace.includes(v.replace(/\s+/g, "")))) {
+            const helpText = `✳️This are the current commands you can try: 
 
 📜Ai say 
 E.g "Ai say banana"
@@ -235,131 +275,140 @@ E.g "Ai pictures of anime please"
 --- KleinBot, your personal tambay kachikahan.❤️ ---
 -KleinDindin`;
 
-          const sent = await sendTextReply(userId, helpText, PAGE_ACCESS_TOKEN, false);
-          saveBotMessage(userId, sent);
-          continue;
-        }
-
-        // CREATOR
-        if (creatorFullVariants.some(v => noSpace.includes(v.replace(/\s+/g, "")))) {
-          const sent = await sendTextReply(
-            userId,
-            FIXED_CREATOR_REPLY,
-            PAGE_ACCESS_TOKEN,
-            showFooter
-          );
-          saveBotMessage(userId, sent);
-          continue;
-        }
-
-        // BOT NAME
-        if (botNameVariants.some(v => noSpace.includes(v.replace(/\s+/g, "")))) {
-          const botReply = "Yes? I'm here! 🤖💛";
-          const sent = await sendTextReply(
-            userId,
-            botReply,
-            PAGE_ACCESS_TOKEN,
-            showFooter
-          );
-          saveBotMessage(userId, sent);
-          continue;
-        }
-
-        // "Klein"
-        if (singleKlein.includes(lower)) {
-          const clarify = "Uhm, are you talking about me, KleinBot, or my creator? 🤭";
-          const sent = await sendTextReply(
-            userId,
-            clarify,
-            PAGE_ACCESS_TOKEN,
-            showFooter
-          );
-          saveBotMessage(userId, sent);
-          continue;
-        }
-
-        // === AI SAY (VOICE) ===
-        const voiceMatch = text.match(voiceRegex);
-        if (voiceMatch) {
-          const spoken = voiceMatch[1];
-
-          const audio = await generateElevenLabsVoice(spoken);
-
-          if (!audio) {
-            const fallback = "Sorry, I can't generate audio right now 😭 try again later!";
-            const sent = await sendTextReply(userId, fallback, PAGE_ACCESS_TOKEN, showFooter);
+            const sent = await sendTextReply(userId, helpText, PAGE_ACCESS_TOKEN, false);
             saveBotMessage(userId, sent);
             continue;
           }
 
-          const attach = await uploadAttachment(audio, PAGE_ACCESS_TOKEN);
-
-          if (attach) {
-            await safeFetch(
-              `https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`,
-              {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  recipient: { id: userId },
-                  messaging_type: "RESPONSE",
-                  message: {
-                    attachment: { type: "audio", payload: { attachment_id: attach } }
-                  }
-                })
-              }
+          // CREATOR
+          if (creatorFullVariants.some(v => noSpace.includes(v.replace(/\s+/g, "")))) {
+            const sent = await sendTextReply(
+              userId,
+              FIXED_CREATOR_REPLY,
+              PAGE_ACCESS_TOKEN,
+              showFooter
             );
-            saveBotMessage(userId, `🎤 Sent audio: "${spoken}"`);
-          } else {
-            const fallback = "Sorry, I can't generate audio right now 😭 try again later!";
-            const sent = await sendTextReply(userId, fallback, PAGE_ACCESS_TOKEN, showFooter);
             saveBotMessage(userId, sent);
+            continue;
           }
-          continue;
+
+          // BOT NAME
+          if (botNameVariants.some(v => noSpace.includes(v.replace(/\s+/g, "")))) {
+            const botReply = "Yes? I'm here! 🤖💛";
+            const sent = await sendTextReply(
+              userId,
+              botReply,
+              PAGE_ACCESS_TOKEN,
+              showFooter
+            );
+            saveBotMessage(userId, sent);
+            continue;
+          }
+
+          // "Klein"
+          if (singleKlein.includes(lower)) {
+            const clarify = "Uhm, are you talking about me, KleinBot, or my creator? 🤭";
+            const sent = await sendTextReply(
+              userId,
+              clarify,
+              PAGE_ACCESS_TOKEN,
+              showFooter
+            );
+            saveBotMessage(userId, sent);
+            continue;
+          }
+
+          // === AI SAY (VOICE) ===
+          const voiceMatch = text.match(voiceRegex);
+          if (voiceMatch) {
+            const spoken = voiceMatch[1].trim();
+            if (!spoken) {
+              const reply = "What do you want me to say in voice? 😄🎤";
+              const sent = await sendTextReply(userId, reply, PAGE_ACCESS_TOKEN, showFooter);
+              saveBotMessage(userId, sent);
+              continue;
+            }
+
+            const audio = await generateElevenLabsVoice(spoken);
+
+            if (!audio) {
+              const fallback = "Sorry, I can't generate audio right now 😭 try again later!";
+              const sent = await sendTextReply(userId, fallback, PAGE_ACCESS_TOKEN, showFooter);
+              saveBotMessage(userId, sent);
+              continue;
+            }
+
+            const attach = await uploadAttachment(audio, PAGE_ACCESS_TOKEN);
+
+            if (attach) {
+              await safeFetch(
+                `https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`,
+                {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    recipient: { id: userId },
+                    messaging_type: "RESPONSE",
+                    message: {
+                      attachment: { type: "audio", payload: { attachment_id: attach } }
+                    }
+                  })
+                }
+              );
+              saveBotMessage(userId, `🎤 Sent audio: "${spoken}"`);
+            } else {
+              const fallback = "Sorry, I can't generate audio right now 😭 try again later!";
+              const sent = await sendTextReply(userId, fallback, PAGE_ACCESS_TOKEN, showFooter);
+              saveBotMessage(userId, sent);
+            }
+            continue;
+          }
+
+          // IMAGE SEARCH
+          if (lower.includes("picture") || lower.includes("image") ||
+              lower.includes("photo") || lower.includes("pic")) {
+            const q = encodeURIComponent(text);
+            const link = `https://www.google.com/search?q=${q}&tbm=isch`;
+            const reply = `📸 Here you go!\n${link}`;
+            const sent = await sendTextReply(userId, reply, PAGE_ACCESS_TOKEN, showFooter);
+            saveBotMessage(userId, sent);
+            continue;
+          }
+
+          // ROAST ME
+          if (lower.includes("roast me")) {
+            const roast = pickRoast();
+            const sent = await sendTextReply(userId, roast, PAGE_ACCESS_TOKEN, showFooter);
+            saveBotMessage(userId, sent);
+            continue;
+          }
+
+          // WHO MADE YOU
+          if (lower.includes("who made") ||
+              lower.includes("who created") ||
+              lower.includes("gumawa sayo") ||
+              lower.includes("sino gumawa sayo")) {
+            const reply = "I was proudly made by a Grade 12 TVL-ICT student named Klein Dindin 🤖🔥";
+            const sent = await sendTextReply(userId, reply, PAGE_ACCESS_TOKEN, showFooter);
+            saveBotMessage(userId, sent);
+            continue;
+          }
+
+          // NORMAL AI REPLY
+          const memory = buildMemoryContext(userId);
+          const aiReply = await getAIReply(OPENAI, text, memory);
+
+          const final = await sendTextReply(
+            userId,
+            aiReply,
+            PAGE_ACCESS_TOKEN,
+            showFooter
+          );
+
+          saveBotMessage(userId, final);
+        } catch (evtErr) {
+          console.error("Event handler error:", evtErr);
         }
-
-        // IMAGE SEARCH
-        if (lower.includes("picture") || lower.includes("image") ||
-            lower.includes("photo") || lower.includes("pic")) {
-          const q = encodeURIComponent(text);
-          const link = `https://www.google.com/search?q=${q}&tbm=isch`;
-          const reply = `📸 Here you go!\n${link}`;
-          const sent = await sendTextReply(userId, reply, PAGE_ACCESS_TOKEN, showFooter);
-          saveBotMessage(userId, sent);
-          continue;
-        }
-
-        // ROAST ME
-        if (lower.includes("roast me")) {
-          const roast = pickRoast();
-          const sent = await sendTextReply(userId, roast, PAGE_ACCESS_TOKEN, showFooter);
-          saveBotMessage(userId, sent);
-          continue;
-        }
-
-        // WHO MADE YOU
-        if (lower.includes("who made") ||
-            lower.includes("who created") ||
-            lower.includes("gumawa sayo") ||
-            lower.includes("sino gumawa sayo")) {
-          const reply = "I was proudly made by a Grade 12 TVL-ICT student named Klein Dindin 🤖🔥";
-          const sent = await sendTextReply(userId, reply, PAGE_ACCESS_TOKEN, showFooter);
-          saveBotMessage(userId, sent);
-          continue;
-        }
-
-        // NORMAL AI REPLY
-        const memory = buildMemoryContext(userId);
-        const aiReply = await getAIReply(OPENAI, text, memory);
-
-        const final = await sendTextReply(
-          userId,
-          aiReply,
-          PAGE_ACCESS_TOKEN,
-          showFooter
-        );
-
-        saveBotMessage(userId, final);
       }
     }
 
@@ -371,5 +420,4 @@ E.g "Ai pictures of anime please"
   }
 }
 
-// extra filler lines to maintain structure
-                
+// EOF
