@@ -53,32 +53,50 @@ async function safeFetch(url, options) {
   return fetch(url, options);
 }
 
+// === FOOTER SETUP ===
+const FOOTER = `\n\n\nUse <GptHelp> command to see all of the current commands.`;
+
+// helper to append footer to a text reply
+function buildFooterText(text) {
+  // ensure no accidental double-footer
+  if (!text) return FOOTER.trim();
+  if (text.includes(FOOTER)) return text;
+  return `${text}${FOOTER}`;
+}
+
 // === TRIGGERS & VARIANTS ===
 
 // Voice trigger regex (robust)
 const voiceRegex = /^(?:ai[\s.\-]*say|a\.i[\s.\-]*say|aisay|ai-say|ai\s+sey)\s+(.+)$/i;
 
-// Creator full-name variants (must trigger the exact fixed reply)
+// Help feature variants (magic word variants)
+const helpVariants = [
+  "gpthelp", "gpt help", "gpt-help",
+  "kleinhelp", "klein help", "klein-help",
+  "help kleinbot", "help klein", "kbhelp"
+];
+
+// Creator full-name variants
 const creatorFullVariants = [
   "klein dindin", "kleindindin", "rjklein", "rjdindin",
   "rj klein", "rj dindin", "dindin klein", "klein dindin"
 ];
 
-// Bot name variants (KleinBot) — these should acknowledge the bot
+// Bot name variants
 const botNameVariants = [
   "kleinbot", "klein bot", "klein_bot", "kleinbot!",
   "klein-bot"
 ];
 
-// single-word klein (clarification)
+// single-word klein
 const singleKlein = ["klein"];
 
-// Exact fixed creator reply (never change)
+// Exact fixed creator reply
 const FIXED_CREATOR_REPLY = "Oh! You're talking about my creator, well he's busy rn, nag lulu pasya 🙏\nBut I'm here you can talk to me. ❤️🤩";
 
-// 55 roasts (array)
+// 55 roasts
 const ROASTS = [
-  "Oo tama, ikaw yung na motivate tapos kinabukasan wlang ginawa. 🥀💀",
+  "Ikaw yung umasa pero pinaasa.",
   "Oy alam mo ba? Sa sobrang hina mo, kahit calculator umiiyak pag ikaw gamit. 😭🧮",
   "Utak mo parang WiFi sa probinsya — mahina, putol-putol, minsan wala talaga. 📶💀",
   "Sa sobrang tamad mo, pati multo sa bahay niyo napagod na. 👻😮‍💨",
@@ -91,14 +109,14 @@ const ROASTS = [
   "Kahit ghosting, di mo alam — kasi lahat sayo nag-iignore. 👻💔",
   "Kung braincells mo empleyado, naka day-off lahat. 🧠🏖️",
   "Nagpapanggap kang may plano? Parang papel sa ulan — dali-daling nawawala. 🌧️📄",
-  "Charot ka? Dua-dua lang reply mo, parang buffering video. ⏳📺",
+  "AI make it shorter, AI make it understandable. 🙄 heavy AI dependent yarn? 💀🔥",
   "Mas malakas pa ang WiFi ng kapitbahay kaysa attention span mo. 📶😅",
   "Ang confidence mo parang expired na noodles — kulang sa laman. 🍜💀",
   "Kahit alarm, pinapatay ka kasi kulang ang urgency. ⏰😴",
   "Mukhang acquainted ka sa failure, best friends na kayo. 🤝😭",
   "Bakit ang sense mo parang second-hand? Ginamit na at walang warranty. 🧾😵",
   "May sense of humor ka? Oo, sa ibang tao. Hindi sa sarili mo. 😂🚫",
-  "Pogi points? Wala. Charm? Na-lost na sa GPS. 📍💨",
+  "Study ayaw pero ipa sagot sa AI gusto?",
   "Buto ng jokes mo, walang laman. 🍖😆",
   "Bilog ang mundo, pero hindi umiikot ang bait mo. 🌍🔒",
   "Sana may tutorial para sa social skills mo. Missing steps: 4–12. 📚❌",
@@ -139,40 +157,35 @@ function pickRoast() {
 
 // === FREE GOOGLE TTS (MP3)
 async function generateVoiceMP3(text) {
-  // attempt to use auto-detect language. 'tl=auto' works in many regions.
   const ttsUrl = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(
     text
   )}&tl=auto&client=tw-ob`;
   const resp = await safeFetch(ttsUrl, {
-    headers: { "User-Agent": "Mozilla/5.0" }, // sometimes required by Google TTS
+    headers: { "User-Agent": "Mozilla/5.0" },
   });
-  if (!resp.ok) {
-    throw new Error("Google TTS failed: " + resp.status);
-  }
+  if (!resp.ok) throw new Error("Google TTS failed");
   const array = await resp.arrayBuffer();
   return Buffer.from(array);
 }
 
 // === SEND AUDIO TO MESSENGER
 async function sendAudio(recipientId, audioBuffer, PAGE_ACCESS_TOKEN) {
-  // Build multipart/form-data using FormData / Blob (Vercel supports these)
   const form = new FormData();
   form.append("recipient", JSON.stringify({ id: recipientId }));
   form.append("message", JSON.stringify({ attachment: { type: "audio", payload: {} } }));
-  const blob = new Blob([audioBuffer], { type: "audio/mpeg" });
-  form.append("filedata", blob, "voice.mp3");
+  form.append("filedata", new Blob([audioBuffer], { type: "audio/mpeg" }), "voice.mp3");
 
   const resp = await safeFetch(
     `https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`,
     { method: "POST", body: form }
   );
   if (!resp.ok) {
-    const txt = await resp.text();
+    const txt = await resp.text().catch(() => "no-body");
     throw new Error("Messenger audio upload failed: " + txt);
   }
 }
 
-// === SEND TEXT MESSAGE
+// === SEND TEXT MESSAGE (low-level) ===
 async function sendMessage(recipientId, text, PAGE_ACCESS_TOKEN) {
   await safeFetch(
     `https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`,
@@ -188,7 +201,7 @@ async function sendMessage(recipientId, text, PAGE_ACCESS_TOKEN) {
   );
 }
 
-// === Call OpenAI Chat (normal AI replies)
+// === Call OpenAI Chat
 async function getAIReply(openaiApiKey, userMessage, memoryContext) {
   const body = {
     model: "gpt-4o-mini",
@@ -217,16 +230,15 @@ async function getAIReply(openaiApiKey, userMessage, memoryContext) {
   });
 
   if (!resp.ok) {
-    const txt = await resp.text();
+    const txt = await resp.text().catch(() => "no-body");
     console.error("OpenAI chat error:", resp.status, txt);
     return "Sorry, nagka-error ako 😭";
   }
-
   const data = await resp.json();
   return data?.choices?.[0]?.message?.content ?? "Sorry, nagka-error ako 😭";
 }
 
-// === WEBHOOK HANDLER (Vercel-ready)
+// === WEBHOOK HANDLER
 export default async function handler(req, res) {
   const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
   const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
@@ -250,106 +262,150 @@ export default async function handler(req, res) {
     for (const entry of body.entry || []) {
       for (const event of entry.messaging || []) {
         try {
-          if (!event.message || !event.sender || !event.sender.id) continue;
+          if (!event.message || !event.sender?.id) continue;
           if (!event.message.text) continue;
 
           const userId = event.sender.id;
-          const rawText = event.message.text || "";
+          const rawText = event.message.text;
           const text = rawText.trim();
           const textLower = text.toLowerCase();
 
-          // ensure memory
           ensureUserMemory(userId);
-          // save user message (original casing)
           saveUserMessage(userId, text);
 
-          // === 1) Creator full-name detection (EXACT FIXED REPLY) ===
-          // match if message contains any creator full variant as a word or concatenated
-          const normalizedNoSpace = textLower.replace(/\s+/g, "");
-          const isCreator = creatorFullVariants.some(v => normalizedNoSpace.includes(v.replace(/\s+/g, "")));
-          if (isCreator) {
-            await sendMessage(userId, FIXED_CREATOR_REPLY, PAGE_ACCESS_TOKEN);
-            saveBotMessage(userId, FIXED_CREATOR_REPLY);
+          // === NEW HELP FEATURE 🔥 ===
+          const normalizedHelp = textLower.replace(/\s+/g, "");
+          const isHelp = helpVariants.some(v => normalizedHelp.includes(v.replace(/\s+/g, "")));
+
+          if (isHelp) {
+            const helpReply =
+`✳️This are the current commands you can try: 
+
+📜Ai say ___
+E.g "Ai say banana"
+
+📜Roast me
+(Current roasts are mostly tagalog)
+
+📜Ai picture of ___
+E.g "Ai pictures of anime please"
+
+📜Ai motivate me
+
+--- KleinBot is still improving, not much features right now because we're using Free-Plan OPEN-AI API Model. Have a wonderful day and enjoy chatting with KleinBot, your personal tambay kachikahan.❤️ ---
+-KleinDindin`;
+            const finalHelp = buildFooterText(helpReply);
+            await sendMessage(userId, finalHelp, PAGE_ACCESS_TOKEN);
+            saveBotMessage(userId, finalHelp);
             continue;
           }
 
-          // === 2) Bot name detection (KleinBot variants) ===
-          // we check normalized (no-spaces) inclusion for variants
-          const normalizedLowerNoSpace = textLower.replace(/\s+/g, "");
-          const isBotName = botNameVariants.some(v => normalizedLowerNoSpace.includes(v.replace(/\s+/g, "")));
+          // === Creator name detection ===
+          const normalizedNoSpace = textLower.replace(/\s+/g, "");
+          const isCreator = creatorFullVariants.some(
+            v => normalizedNoSpace.includes(v.replace(/\s+/g, ""))
+          );
+          if (isCreator) {
+            const finalCreator = buildFooterText(FIXED_CREATOR_REPLY);
+            await sendMessage(userId, finalCreator, PAGE_ACCESS_TOKEN);
+            saveBotMessage(userId, finalCreator);
+            continue;
+          }
+
+          // === Bot name detection ===
+          const isBotName = botNameVariants.some(
+            v => normalizedNoSpace.includes(v.replace(/\s+/g, ""))
+          );
           if (isBotName) {
             const botReply = "Yes? I'm here! 🤖💛";
-            await sendMessage(userId, botReply, PAGE_ACCESS_TOKEN);
-            saveBotMessage(userId, botReply);
+            const finalBotReply = buildFooterText(botReply);
+            await sendMessage(userId, finalBotReply, PAGE_ACCESS_TOKEN);
+            saveBotMessage(userId, finalBotReply);
             continue;
           }
 
-          // === 3) Single-word "klein" clarification ONLY when text exactly equals 'klein' ===
+          // === single-word klein ===
           if (singleKlein.includes(textLower)) {
             const clarify = "Uhm, are you talking about me, KleinBot, or my creator? Let me know 🤩";
-            await sendMessage(userId, clarify, PAGE_ACCESS_TOKEN);
-            saveBotMessage(userId, clarify);
+            const finalClarify = buildFooterText(clarify);
+            await sendMessage(userId, finalClarify, PAGE_ACCESS_TOKEN);
+            saveBotMessage(userId, finalClarify);
             continue;
           }
 
-          // === 4) Voice trigger ===
+          // === Voice trigger ===
           const voiceMatch = text.match(voiceRegex);
           if (voiceMatch) {
             const spokenText = voiceMatch[1].trim();
             if (!spokenText) {
               const reply = "What do you want me to say in voice? 😄🎤";
-              await sendMessage(userId, reply, PAGE_ACCESS_TOKEN);
-              saveBotMessage(userId, reply);
+              const finalReply = buildFooterText(reply);
+              await sendMessage(userId, finalReply, PAGE_ACCESS_TOKEN);
+              saveBotMessage(userId, finalReply);
               continue;
             }
-
             try {
               const audioBuffer = await generateVoiceMP3(spokenText);
+              // send only audio (no footer for audio-only responses)
               await sendAudio(userId, audioBuffer, PAGE_ACCESS_TOKEN);
-              const reply = `🎤 Here's how "${spokenText}" sounds!`;
-              saveBotMessage(userId, reply);
+              // we do not send a separate text message here (voice excluded from footer rule)
+              // but we save a short internal note to memory (without footer)
+              saveBotMessage(userId, `🎤 Sent audio: "${spokenText}"`);
             } catch (err) {
               console.error("TTS/sendAudio error:", err);
               const fallback = `Sori, hindi makagawa ng audio ngayon. Narito ang sinabi ko: "${spokenText}"`;
-              await sendMessage(userId, fallback, PAGE_ACCESS_TOKEN);
-              saveBotMessage(userId, fallback);
+              const finalFallback = buildFooterText(fallback);
+              await sendMessage(userId, finalFallback, PAGE_ACCESS_TOKEN);
+              saveBotMessage(userId, finalFallback);
             }
             continue;
           }
 
-          // === 5) Image search trigger (pictures/image/ photo) ===
-          if (textLower.includes("picture") || textLower.includes("image") || textLower.includes("photo") || textLower.includes("pic")) {
+          // === Image search ===
+          if (
+            textLower.includes("picture") ||
+            textLower.includes("image") ||
+            textLower.includes("photo") ||
+            textLower.includes("pic")
+          ) {
             const q = encodeURIComponent(text);
             const link = `https://www.google.com/search?q=${q}&tbm=isch`;
             const reply = `📸 Here you go!\n${link}`;
-            await sendMessage(userId, reply, PAGE_ACCESS_TOKEN);
-            saveBotMessage(userId, reply);
+            const finalReply = buildFooterText(reply);
+            await sendMessage(userId, finalReply, PAGE_ACCESS_TOKEN);
+            saveBotMessage(userId, finalReply);
             continue;
           }
 
-          // === 6) Roast mode trigger ===
+          // === Roast me ===
           if (textLower.includes("roast me")) {
             const roast = pickRoast();
-            await sendMessage(userId, roast, PAGE_ACCESS_TOKEN);
-            saveBotMessage(userId, roast);
+            const finalRoast = buildFooterText(roast);
+            await sendMessage(userId, finalRoast, PAGE_ACCESS_TOKEN);
+            saveBotMessage(userId, finalRoast);
             continue;
           }
 
-          // === 7) Who made you trigger ===
-          const whoMadeTriggers = ["who made you", "who created you", "who make you", "sino gumawa sayo", "gumawa sayo"];
+          // === Who made you ===
+          const whoMadeTriggers = [
+            "who made you", "who created you", "who make you",
+            "sino gumawa sayo", "gumawa sayo"
+          ];
           if (whoMadeTriggers.some(t => textLower.includes(t))) {
             const reply = "I was proudly made by a Grade 12 TVL-ICT student named Klein Dindin 🤖🔥";
-            await sendMessage(userId, reply, PAGE_ACCESS_TOKEN);
-            saveBotMessage(userId, reply);
+            const finalReply = buildFooterText(reply);
+            await sendMessage(userId, finalReply, PAGE_ACCESS_TOKEN);
+            saveBotMessage(userId, finalReply);
             continue;
           }
 
-          // === 8) Normal AI reply (with memory context) ===
+          // === Normal AI reply ===
           const memoryContext = buildMemoryContext(userId);
           const aiReply = await getAIReply(OPENAI_API_KEY, text, memoryContext);
+          const finalAiReply = buildFooterText(aiReply);
+          await sendMessage(userId, finalAiReply, PAGE_ACCESS_TOKEN);
+          saveBotMessage(userId, finalAiReply);
 
-          await sendMessage(userId, aiReply, PAGE_ACCESS_TOKEN);
-          saveBotMessage(userId, aiReply);
         } catch (evtErr) {
           console.error("Event handler error:", evtErr);
         }
@@ -361,4 +417,5 @@ export default async function handler(req, res) {
     console.error("Webhook POST error:", err);
     return res.status(500).send("Server Error");
   }
-            }
+     }
+      
