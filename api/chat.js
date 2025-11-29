@@ -89,7 +89,7 @@ const helpVariants = [
 // Creator detector
 const creatorFullVariants = [
   "kleindindin", "klein dindin", "rj klein", "rjdindin",
-  "rjklein", "rj dindin", "dindin klein"
+  "rjklein", "rj dindin", "dindin klein", "your creator"
 ];
 
 const botNameVariants = ["kleinbot", "klein bot", "klein-bot", "klein_bot"];
