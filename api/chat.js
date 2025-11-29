@@ -5,17 +5,17 @@
 const MAX_MEMORY = 10;
 const INACTIVITY_MS = 3600000; // 1 hour
 
-// In-memory store: { [userId]: { user: [{text,ts}], bot: [{text,ts}], lastActive } }
+// In-memory store: { [userId]: { user: [{text,ts}], bot: [{text,ts}], lastActive, messageCount } }
 const userMemory = {};
 
 // === HELPERS ===
 function ensureUserMemory(userId) {
   if (!userMemory[userId]) {
-    userMemory[userId] = { user: [], bot: [], lastActive: Date.now() };
+    userMemory[userId] = { user: [], bot: [], lastActive: Date.now(), messageCount: 0 };
   }
-  // reset after inactivity
+  // reset after inactivity (also reset messageCount)
   if (Date.now() - userMemory[userId].lastActive > INACTIVITY_MS) {
-    userMemory[userId] = { user: [], bot: [], lastActive: Date.now() };
+    userMemory[userId] = { user: [], bot: [], lastActive: Date.now(), messageCount: 0 };
   }
   userMemory[userId].lastActive = Date.now();
 }
@@ -56,12 +56,34 @@ async function safeFetch(url, options) {
 // === FOOTER SETUP ===
 const FOOTER = `\n\n\nUse <GptHelp> command to see all of the current commands.`;
 
-// helper to append footer to a text reply
+// helper to append footer to a text reply (avoid double-footer)
 function buildFooterText(text) {
-  // ensure no accidental double-footer
   if (!text) return FOOTER.trim();
   if (text.includes(FOOTER)) return text;
   return `${text}${FOOTER}`;
+}
+
+// low-level send text (wraps Messenger API)
+async function sendMessage(recipientId, text, PAGE_ACCESS_TOKEN) {
+  await safeFetch(
+    `https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        recipient: { id: recipientId },
+        messaging_type: "RESPONSE",
+        message: { text },
+      }),
+    }
+  );
+}
+
+// high-level: send text reply, optionally append footer
+async function sendTextReply(recipientId, text, PAGE_ACCESS_TOKEN, appendFooter = false) {
+  const final = appendFooter ? buildFooterText(text) : text;
+  await sendMessage(recipientId, final, PAGE_ACCESS_TOKEN);
+  return final;
 }
 
 // === TRIGGERS & VARIANTS ===
@@ -96,7 +118,8 @@ const FIXED_CREATOR_REPLY = "Oh! You're talking about my creator, well he's busy
 
 // 55 roasts
 const ROASTS = [
-  "Ikaw yung umasa pero pinaasa.",
+  "Landi gusto ligo ayaw? 🤢🤮",
+  "Oy bes! Diba ikaw yung nag ra rants kay chatgpt? Kase wlay may interest sa mga kwento mo. 🔥💀",
   "Oy alam mo ba? Sa sobrang hina mo, kahit calculator umiiyak pag ikaw gamit. 😭🧮",
   "Utak mo parang WiFi sa probinsya — mahina, putol-putol, minsan wala talaga. 📶💀",
   "Sa sobrang tamad mo, pati multo sa bahay niyo napagod na. 👻😮‍💨",
@@ -109,14 +132,14 @@ const ROASTS = [
   "Kahit ghosting, di mo alam — kasi lahat sayo nag-iignore. 👻💔",
   "Kung braincells mo empleyado, naka day-off lahat. 🧠🏖️",
   "Nagpapanggap kang may plano? Parang papel sa ulan — dali-daling nawawala. 🌧️📄",
-  "AI make it shorter, AI make it understandable. 🙄 heavy AI dependent yarn? 💀🔥",
+  "Pag-aralan mo hinde yung pinapagod mo kami sa pagsasagot diyan sa mga essays mo. 🤮💀",
   "Mas malakas pa ang WiFi ng kapitbahay kaysa attention span mo. 📶😅",
   "Ang confidence mo parang expired na noodles — kulang sa laman. 🍜💀",
   "Kahit alarm, pinapatay ka kasi kulang ang urgency. ⏰😴",
   "Mukhang acquainted ka sa failure, best friends na kayo. 🤝😭",
   "Bakit ang sense mo parang second-hand? Ginamit na at walang warranty. 🧾😵",
   "May sense of humor ka? Oo, sa ibang tao. Hindi sa sarili mo. 😂🚫",
-  "Study ayaw pero ipa sagot sa AI gusto?",
+  "Pogi points? Wala. Charm? Na-lost na sa GPS. 📍💨",
   "Buto ng jokes mo, walang laman. 🍖😆",
   "Bilog ang mundo, pero hindi umiikot ang bait mo. 🌍🔒",
   "Sana may tutorial para sa social skills mo. Missing steps: 4–12. 📚❌",
@@ -124,7 +147,7 @@ const ROASTS = [
   "Parang wifi hotspot mo: open pero walang connection. 🔓📴",
   "Ang sarcasm mo parang instant coffee: mabilis pero walang depth. ☕😬",
   "Nag-aapply ka ba sa pagiging problema? Qualified ka na. 📝😅",
-  "Kung katangahan exam, passing grade ka. 🎓💀",
+  "Kung patangahan ang exam, passing grade ka. 🎓💀",
   "Tulong! Nawawala ang logic mo sa traffic. 🚗❌",
   "Nag-level up ka — level: confusing. 🎮❓",
   "Parang pelikula: suspenseful pero walang magandang ending. 🎬😵",
@@ -183,22 +206,6 @@ async function sendAudio(recipientId, audioBuffer, PAGE_ACCESS_TOKEN) {
     const txt = await resp.text().catch(() => "no-body");
     throw new Error("Messenger audio upload failed: " + txt);
   }
-}
-
-// === SEND TEXT MESSAGE (low-level) ===
-async function sendMessage(recipientId, text, PAGE_ACCESS_TOKEN) {
-  await safeFetch(
-    `https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        recipient: { id: recipientId },
-        messaging_type: "RESPONSE",
-        message: { text },
-      }),
-    }
-  );
 }
 
 // === Call OpenAI Chat
@@ -270,10 +277,18 @@ export default async function handler(req, res) {
           const text = rawText.trim();
           const textLower = text.toLowerCase();
 
+          // ensure memory + increment user message counter
           ensureUserMemory(userId);
           saveUserMessage(userId, text);
+          userMemory[userId].messageCount = (userMemory[userId].messageCount || 0) + 1;
+          const currentMsgCount = userMemory[userId].messageCount;
 
-          // === NEW HELP FEATURE 🔥 ===
+          // determine if footer should be appended:
+          // footer only on first message (count === 1) OR every 10th (count % 10 === 0)
+          const shouldAppendFooterByCount =
+            currentMsgCount === 1 || (currentMsgCount % 10 === 0);
+
+          // === NEW HELP FEATURE (GptHelp) ===
           const normalizedHelp = textLower.replace(/\s+/g, "");
           const isHelp = helpVariants.some(v => normalizedHelp.includes(v.replace(/\s+/g, "")));
 
@@ -281,7 +296,7 @@ export default async function handler(req, res) {
             const helpReply =
 `✳️This are the current commands you can try: 
 
-📜Ai say ___
+📜Ai say 
 E.g "Ai say banana"
 
 📜Roast me
@@ -294,8 +309,9 @@ E.g "Ai pictures of anime please"
 
 --- KleinBot is still improving, not much features right now because we're using Free-Plan OPEN-AI API Model. Have a wonderful day and enjoy chatting with KleinBot, your personal tambay kachikahan.❤️ ---
 -KleinDindin`;
-            const finalHelp = buildFooterText(helpReply);
-            await sendMessage(userId, finalHelp, PAGE_ACCESS_TOKEN);
+            // GptHelp must NOT have the footer appended (explicit requirement)
+            const finalHelp = helpReply;
+            await sendTextReply(userId, finalHelp, PAGE_ACCESS_TOKEN, false);
             saveBotMessage(userId, finalHelp);
             continue;
           }
@@ -307,8 +323,11 @@ E.g "Ai pictures of anime please"
           );
           if (isCreator) {
             const finalCreator = buildFooterText(FIXED_CREATOR_REPLY);
-            await sendMessage(userId, finalCreator, PAGE_ACCESS_TOKEN);
-            saveBotMessage(userId, finalCreator);
+            // Creator reply should include footer only if shouldAppendFooterByCount is true
+            const sendCreator = shouldAppendFooterByCount
+              ? await sendTextReply(userId, FIXED_CREATOR_REPLY, PAGE_ACCESS_TOKEN, true)
+              : await sendTextReply(userId, FIXED_CREATOR_REPLY, PAGE_ACCESS_TOKEN, false);
+            saveBotMessage(userId, sendCreator);
             continue;
           }
 
@@ -318,18 +337,20 @@ E.g "Ai pictures of anime please"
           );
           if (isBotName) {
             const botReply = "Yes? I'm here! 🤖💛";
-            const finalBotReply = buildFooterText(botReply);
-            await sendMessage(userId, finalBotReply, PAGE_ACCESS_TOKEN);
-            saveBotMessage(userId, finalBotReply);
+            const sendBotName = shouldAppendFooterByCount
+              ? await sendTextReply(userId, botReply, PAGE_ACCESS_TOKEN, true)
+              : await sendTextReply(userId, botReply, PAGE_ACCESS_TOKEN, false);
+            saveBotMessage(userId, sendBotName);
             continue;
           }
 
           // === single-word klein ===
           if (singleKlein.includes(textLower)) {
             const clarify = "Uhm, are you talking about me, KleinBot, or my creator? Let me know 🤩";
-            const finalClarify = buildFooterText(clarify);
-            await sendMessage(userId, finalClarify, PAGE_ACCESS_TOKEN);
-            saveBotMessage(userId, finalClarify);
+            const sendClarify = shouldAppendFooterByCount
+              ? await sendTextReply(userId, clarify, PAGE_ACCESS_TOKEN, true)
+              : await sendTextReply(userId, clarify, PAGE_ACCESS_TOKEN, false);
+            saveBotMessage(userId, sendClarify);
             continue;
           }
 
@@ -339,24 +360,27 @@ E.g "Ai pictures of anime please"
             const spokenText = voiceMatch[1].trim();
             if (!spokenText) {
               const reply = "What do you want me to say in voice? 😄🎤";
-              const finalReply = buildFooterText(reply);
-              await sendMessage(userId, finalReply, PAGE_ACCESS_TOKEN);
-              saveBotMessage(userId, finalReply);
+              // this is text fallback (not TTS); footer rules apply
+              const sendFallback = shouldAppendFooterByCount
+                ? await sendTextReply(userId, reply, PAGE_ACCESS_TOKEN, true)
+                : await sendTextReply(userId, reply, PAGE_ACCESS_TOKEN, false);
+              saveBotMessage(userId, sendFallback);
               continue;
             }
             try {
               const audioBuffer = await generateVoiceMP3(spokenText);
               // send only audio (no footer for audio-only responses)
               await sendAudio(userId, audioBuffer, PAGE_ACCESS_TOKEN);
-              // we do not send a separate text message here (voice excluded from footer rule)
-              // but we save a short internal note to memory (without footer)
+              // Save an internal note (no footer) about the audio send
               saveBotMessage(userId, `🎤 Sent audio: "${spokenText}"`);
             } catch (err) {
               console.error("TTS/sendAudio error:", err);
               const fallback = `Sori, hindi makagawa ng audio ngayon. Narito ang sinabi ko: "${spokenText}"`;
-              const finalFallback = buildFooterText(fallback);
-              await sendMessage(userId, finalFallback, PAGE_ACCESS_TOKEN);
-              saveBotMessage(userId, finalFallback);
+              // fallback is text; footer rules apply
+              const sendFallback = shouldAppendFooterByCount
+                ? await sendTextReply(userId, fallback, PAGE_ACCESS_TOKEN, true)
+                : await sendTextReply(userId, fallback, PAGE_ACCESS_TOKEN, false);
+              saveBotMessage(userId, sendFallback);
             }
             continue;
           }
@@ -371,18 +395,20 @@ E.g "Ai pictures of anime please"
             const q = encodeURIComponent(text);
             const link = `https://www.google.com/search?q=${q}&tbm=isch`;
             const reply = `📸 Here you go!\n${link}`;
-            const finalReply = buildFooterText(reply);
-            await sendMessage(userId, finalReply, PAGE_ACCESS_TOKEN);
-            saveBotMessage(userId, finalReply);
+            const sendImg = shouldAppendFooterByCount
+              ? await sendTextReply(userId, reply, PAGE_ACCESS_TOKEN, true)
+              : await sendTextReply(userId, reply, PAGE_ACCESS_TOKEN, false);
+            saveBotMessage(userId, sendImg);
             continue;
           }
 
           // === Roast me ===
           if (textLower.includes("roast me")) {
             const roast = pickRoast();
-            const finalRoast = buildFooterText(roast);
-            await sendMessage(userId, finalRoast, PAGE_ACCESS_TOKEN);
-            saveBotMessage(userId, finalRoast);
+            const sendRoast = shouldAppendFooterByCount
+              ? await sendTextReply(userId, roast, PAGE_ACCESS_TOKEN, true)
+              : await sendTextReply(userId, roast, PAGE_ACCESS_TOKEN, false);
+            saveBotMessage(userId, sendRoast);
             continue;
           }
 
@@ -393,19 +419,41 @@ E.g "Ai pictures of anime please"
           ];
           if (whoMadeTriggers.some(t => textLower.includes(t))) {
             const reply = "I was proudly made by a Grade 12 TVL-ICT student named Klein Dindin 🤖🔥";
-            const finalReply = buildFooterText(reply);
-            await sendMessage(userId, finalReply, PAGE_ACCESS_TOKEN);
-            saveBotMessage(userId, finalReply);
+            const sendWho = shouldAppendFooterByCount
+              ? await sendTextReply(userId, reply, PAGE_ACCESS_TOKEN, true)
+              : await sendTextReply(userId, reply, PAGE_ACCESS_TOKEN, false);
+            saveBotMessage(userId, sendWho);
             continue;
           }
 
           // === Normal AI reply ===
           const memoryContext = buildMemoryContext(userId);
           const aiReply = await getAIReply(OPENAI_API_KEY, text, memoryContext);
-          const finalAiReply = buildFooterText(aiReply);
-          await sendMessage(userId, finalAiReply, PAGE_ACCESS_TOKEN);
-          saveBotMessage(userId, finalAiReply);
+          // Ensure GptHelp content is not accidentally returned by AI — if it returns that same help block, we still must NOT append footer if it's the GptHelp content exactly.
+          const isAiHelpExact = aiReply && aiReply.trim() === `✳️This are the current commands you can try: 
 
+📜Ai say 
+E.g "Ai say banana"
+
+📜Roast me
+(Current roasts are mostly tagalog)
+
+📜Ai picture of ___
+E.g "Ai pictures of anime please"
+
+📜Ai motivate me
+
+--- KleinBot is still improving, not much features right now because we're using Free-Plan OPEN-AI API Model. Have a wonderful day and enjoy chatting with KleinBot, your personal tambay kachikahan.❤️ ---
+-KleinDindin`;
+
+          // If AI returned the exact help block, treat it like help (no footer)
+          const appendFooterNow = shouldAppendFooterByCount && !isAiHelpExact;
+
+          const finalAi = appendFooterNow
+            ? await sendTextReply(userId, aiReply, PAGE_ACCESS_TOKEN, true)
+            : await sendTextReply(userId, aiReply, PAGE_ACCESS_TOKEN, false);
+
+          saveBotMessage(userId, finalAi);
         } catch (evtErr) {
           console.error("Event handler error:", evtErr);
         }
@@ -417,5 +465,5 @@ E.g "Ai pictures of anime please"
     console.error("Webhook POST error:", err);
     return res.status(500).send("Server Error");
   }
-     }
-      
+  }
+    
