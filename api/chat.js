@@ -89,14 +89,14 @@ const helpVariants = [
 // Creator detector
 const creatorFullVariants = [
   "kleindindin", "klein dindin", "rj klein", "rjdindin",
-  "rjklein", "rj dindin", "dindin klein", "your creator"
+  "rjklein", "rj dindin", "dindin klein", "your creator", "who's your creator"
 ];
 
 const botNameVariants = ["kleinbot", "klein bot", "klein-bot", "klein_bot"];
 const singleKlein = ["klein"];
 
 const FIXED_CREATOR_REPLY =
-  "Oh! You're talking about my creator, well he's busy rn, nag lulu pasya 🙏\nBut I'm here you can talk to me. ❤️🤩";
+  "Oh! You're talking about my creator, well he's busy rn, nag lulu pasiya 🙏\nBut I'm here you can talk to me. ❤️🤩";
 
 // Roast bank
 const ROASTS = [
