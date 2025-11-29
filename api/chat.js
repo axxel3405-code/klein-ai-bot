@@ -450,8 +450,7 @@ E.g "Ai pictures of anime please"
           const appendFooterNow = shouldAppendFooterByCount && !isAiHelpExact;
 
           const finalAi = appendFooterNow
-            ? await sendTextRepl
-y(userId, aiReply, PAGE_ACCESS_TOKEN, true)
+            ? await sendTextReply(userId, aiReply, PAGE_ACCESS_TOKEN, true)
             : await sendTextReply(userId, aiReply, PAGE_ACCESS_TOKEN, false);
 
           saveBotMessage(userId, finalAi);
