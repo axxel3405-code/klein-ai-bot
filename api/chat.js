@@ -53,6 +53,9 @@ async function safeFetch(url, options) {
   return fetch(url, options);
 }
 
+// small wait helper to avoid messenger merging messages
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
 // === FOOTER SETUP ===
 const FOOTER = `\n\n\nUse <GptHelp> command to see all of the current commands.`;
 
@@ -206,6 +209,62 @@ async function sendAudio(recipientId, audioBuffer, PAGE_ACCESS_TOKEN) {
     const txt = await resp.text().catch(() => "no-body");
     throw new Error("Messenger audio upload failed: " + txt);
   }
+}
+
+// === ELEVENLABS TTS (Rachel voice) - NEW (uses attachment upload method)
+const ELEVEN_VOICE_ID = "6AUOG2nbfr0yFEeI0784";
+async function generateElevenLabsVoice(text) {
+  try {
+    const resp = await safeFetch(
+      `https://api.elevenlabs.io/v1/text-to-speech/${ELEVEN_VOICE_ID}`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "xi-api-key": process.env.ELEVENLABS_API_KEY,
+        },
+        body: JSON.stringify({
+          text,
+          model_id: "eleven_multilingual_v1"
+        }),
+      }
+    );
+    if (!resp.ok) {
+      const t = await resp.text().catch(() => "no-body");
+      console.error("ElevenLabs TTS error:", resp.status, t);
+      return null;
+    }
+    const array = await resp.arrayBuffer();
+    return Buffer.from(array);
+  } catch (e) {
+    console.error("ElevenLabs exception:", e);
+    return null;
+  }
+}
+
+// upload attachment to Messenger (returns attachment_id)
+async function uploadAttachment(audioBuffer, PAGE_ACCESS_TOKEN) {
+  // requires npm install form-data
+  const FormDataNode = require("form-data");
+  const form = new FormDataNode();
+  form.append("message", JSON.stringify({ attachment: { type: "audio", payload: {} } }));
+  form.append("filedata", audioBuffer, { filename: "voice.mp3", contentType: "audio/mpeg" });
+
+  const resp = await safeFetch(
+    `https://graph.facebook.com/v17.0/me/message_attachments?access_token=${PAGE_ACCESS_TOKEN}`,
+    {
+      method: "POST",
+      body: form,
+      headers: form.getHeaders ? form.getHeaders() : {},
+    }
+  );
+
+  if (!resp.ok) {
+    const txt = await resp.text().catch(() => "no-body");
+    throw new Error("Attachment upload failed: " + resp.status + " " + txt);
+  }
+  const json = await resp.json();
+  return json?.attachment_id || null;
 }
 
 // === Call OpenAI Chat
@@ -368,15 +427,50 @@ E.g "Ai pictures of anime please"
               continue;
             }
             try {
-              const audioBuffer = await generateVoiceMP3(spokenText);
-              // send only audio (no footer for audio-only responses)
-              await sendAudio(userId, audioBuffer, PAGE_ACCESS_TOKEN);
-              // Save an internal note (no footer) about the audio send
-              saveBotMessage(userId, `🎤 Sent audio: "${spokenText}"`);
+              // Try ElevenLabs first (Rachel voice) — returns Buffer or null
+              const elevenBuffer = await generateElevenLabsVoice(spokenText);
+
+              if (elevenBuffer) {
+                // small wait to avoid messenger grouping
+                await wait(500);
+
+                // upload via attachment API (returns attachment_id)
+                const attachmentId = await uploadAttachment(elevenBuffer, PAGE_ACCESS_TOKEN);
+
+                if (!attachmentId) throw new Error("No attachment_id from upload");
+
+                // send audio by attachment_id
+                await safeFetch(
+                  `https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`,
+                  {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      recipient: { id: userId },
+                      messaging_type: "RESPONSE",
+                      message: {
+                        attachment: {
+                          type: "audio",
+                          payload: { attachment_id: attachmentId },
+                        },
+                      },
+                    }),
+                  }
+                );
+
+                // Save internal note (no footer)
+                saveBotMessage(userId, `🎤 Sent audio (ElevenLabs): "${spokenText}"`);
+              } else {
+                // ElevenLabs failed — fallback to text message as requested
+                const fallback = `Sori, hindi makagawa ng audio ngayon. Narito ang sinabi ko: "${spokenText}"`;
+                const sendFallback = shouldAppendFooterByCount
+                  ? await sendTextReply(userId, fallback, PAGE_ACCESS_TOKEN, true)
+                  : await sendTextReply(userId, fallback, PAGE_ACCESS_TOKEN, false);
+                saveBotMessage(userId, sendFallback);
+              }
             } catch (err) {
               console.error("TTS/sendAudio error:", err);
               const fallback = `Sori, hindi makagawa ng audio ngayon. Narito ang sinabi ko: "${spokenText}"`;
-              // fallback is text; footer rules apply
               const sendFallback = shouldAppendFooterByCount
                 ? await sendTextReply(userId, fallback, PAGE_ACCESS_TOKEN, true)
                 : await sendTextReply(userId, fallback, PAGE_ACCESS_TOKEN, false);
@@ -407,12 +501,12 @@ E.g "Ai pictures of anime please"
             const roast = pickRoast();
             const sendRoast = shouldAppendFooterByCount
               ? await sendTextReply(userId, roast, PAGE_ACCESS_TOKEN, true)
-              : await sendTextReply(userId, roast, PAGE_ACCESS_TOKEN, false);
-            saveBotMessage(userId, sendRoast);
+              : await sendTextReply(userId, fallback, PAGE_ACCESS_TOKEN, false);
+              saveBotMessage(userId, sendFallback);
+            }
             continue;
-          }
-
-          // === Who made you ===
+        }
+        // === Who made you ===
           const whoMadeTriggers = [
             "who made you", "who created you", "who make you",
             "sino gumawa sayo", "gumawa sayo"
@@ -425,8 +519,7 @@ E.g "Ai pictures of anime please"
             saveBotMessage(userId, sendWho);
             continue;
           }
-
-          // === Normal AI reply ===
+        // === Normal AI reply ===
           const memoryContext = buildMemoryContext(userId);
           const aiReply = await getAIReply(OPENAI_API_KEY, text, memoryContext);
           // Ensure GptHelp content is not accidentally returned by AI — if it returns that same help block, we still must NOT append footer if it's the GptHelp content exactly.
@@ -446,11 +539,12 @@ E.g "Ai pictures of anime please"
 --- KleinBot is still improving, not much features right now because we're using Free-Plan OPEN-AI API Model. Have a wonderful day and enjoy chatting with KleinBot, your personal tambay kachikahan.❤️ ---
 -KleinDindin`;
 
-          // If AI returned the exact help block, treat it like help (no footer)
+      // If AI returned the exact help block, treat it like help (no footer)
           const appendFooterNow = shouldAppendFooterByCount && !isAiHelpExact;
 
           const finalAi = appendFooterNow
-            ? await sendTextReply(userId, aiReply, PAGE_ACCESS_TOKEN, true)
+            ? await sendTextRepl
+y(userId, aiReply, PAGE_ACCESS_TOKEN, true)
             : await sendTextReply(userId, aiReply, PAGE_ACCESS_TOKEN, false);
 
           saveBotMessage(userId, finalAi);
@@ -458,12 +552,10 @@ E.g "Ai pictures of anime please"
           console.error("Event handler error:", evtErr);
         }
       }
-    }
-
-    return res.status(200).send("EVENT_RECEIVED");
+}
+return res.status(200).send("EVENT_RECEIVED");
   } catch (err) {
     console.error("Webhook POST error:", err);
     return res.status(500).send("Server Error");
   }
-  }
-    
+}
