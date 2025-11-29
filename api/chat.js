@@ -445,6 +445,10 @@ E.g "Ai pictures of anime"
           //
           if (
             lower.includes("who made") ||
+            lower.includes("gumawa ng bot") ||
+            lower.includes("your dev") ||
+            lower.includes("dev mo") ||
+            lower.includes("your maker") ||
             lower.includes("who created") ||
             lower.includes("gumawa sayo") ||
             lower.includes("sino gumawa sayo")
