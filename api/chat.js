@@ -173,7 +173,7 @@ async function getAIReply(openaiKey, userMessage, memory) {
     body: JSON.stringify({
       model: "gpt-4o-mini",
       messages: [
-        { role: "system", content: "You are KleinBot, a friendly Filipino-American chatbot with short replies and emojis." },
+        { role: "system", content: "You are KleinBot, a friendly American-Filipino chatbot with short replies and emojis." },
         { role: "system", content: memory ? `Memory:\n${memory}` : "" },
         { role: "user", content: userMessage }
       ],
